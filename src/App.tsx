@@ -6,6 +6,7 @@ import type { Viewport } from './canvas/ViewportManager';
 import type { NoteElements, Stroke, Element } from './types';
 import { createEmptyNote, supportsBackgroundColor, getElementStrokeColor, getElementBackgroundColor, setElementStrokeColor, setElementBackgroundColor } from './types';
 import { generateId, IDENTITY_MATRIX } from './types/primitives';
+import type { BoundingBox } from './types/primitives';
 import { createStrokeElement } from './elements/stroke/types';
 import type { ShapeElement } from './elements/shape/types';
 import { createSketchableImageElement } from './elements/sketchableimage/types';
@@ -35,6 +36,13 @@ import { detectRectangleX, lastRectXRejection, type RectangleXResult } from './g
 import { createPaletteIntent } from './palette';
 import type { PaletteIntent, PaletteAction } from './palette';
 import { Toaster } from './toast/Toast';
+import { detectButton, detectButtonFromExistingRect } from './geometry/buttonDetection';
+import type { ArrowButtonData } from './interactive/ArrowButtonOverlay';
+import { getRecognitionService } from './recognition/RecognitionService';
+import { createComponentIntent } from './interactive/ComponentIntent';
+import type { ComponentIntent, ComponentAction, ComponentKind } from './interactive/ComponentIntent';
+import type { PhysicsSimData, PhysicsSimLoading } from './interactive/PhysicsOverlay';
+import { generatePhysicsSim, captureCanvasRegion } from './ai/PhysicsGenerator';
 import './App.css';
 
 
@@ -125,6 +133,19 @@ function App() {
 
   // Track palette intent (pending palette menu from rectangle+X gesture)
   const [paletteIntent, setPaletteIntent] = useState<PaletteIntent | null>(null);
+
+  // Track Arrow.js interactive buttons detected from drawings
+  const [arrowButtons, setArrowButtons] = useState<ArrowButtonData[]>([]);
+
+  // Track component intent (pending "make interactive" menu from button-like drawings)
+  const [componentIntent, setComponentIntent] = useState<ComponentIntent | null>(null);
+
+  // Track physics simulation state
+  const [physicsSims, setPhysicsSims] = useState<PhysicsSimData[]>([]);
+  const [physicsLoading, setPhysicsLoading] = useState<PhysicsSimLoading[]>([]);
+
+  // Ref to access the main canvas element for snapshot capture
+  const mainCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // Track strokes to clear from overlay (for synchronized scribble erase)
   const [strokesToClearFromOverlay, setStrokesToClearFromOverlay] = useState<{ strokes: Stroke[]; requestId: number } | null>(null);
@@ -470,6 +491,48 @@ function App() {
           return;
         }
       }
+    }
+
+    // Check for button gesture (rectangle + text strokes inside) — show component menu
+    // Strategy 1: all strokes still pending (rect + text drawn within debounce window)
+    let buttonResult = null;
+    if (pendingStrokesRef.current.length >= 2) {
+      for (let windowSize = 2; windowSize <= Math.min(20, pendingStrokesRef.current.length); windowSize++) {
+        const window = pendingStrokesRef.current.slice(-windowSize);
+        buttonResult = detectButton(window);
+        if (buttonResult) break;
+      }
+    }
+    // Strategy 2: rectangle already consumed as ShapeElement, text strokes are pending
+    if (!buttonResult && pendingStrokesRef.current.length >= 1) {
+      buttonResult = detectButtonFromExistingRect(
+        currentNoteRef.current.elements,
+        pendingStrokesRef.current,
+      );
+    }
+    if (buttonResult) {
+      debugLog.info('Button gesture detected — showing component menu', {
+        rectStrokes: buttonResult.rectangleStrokes.length,
+        textStrokes: buttonResult.textStrokes.length,
+        existingRect: buttonResult.existingRectElementId ?? 'none',
+      });
+
+      const intent = createComponentIntent(buttonResult);
+      setComponentIntent(intent);
+
+      /* Add text strokes as temporary StrokeElement (visible while menu shown) */
+      const strokeElement = createStrokeElement(buttonResult.textStrokes);
+      setCurrentNote({
+        ...currentNoteRef.current,
+        elements: [...currentNoteRef.current.elements, strokeElement],
+      });
+
+      /* Remove text strokes from pending */
+      const consumedSet = new Set(buttonResult.textStrokes);
+      pendingStrokesRef.current = pendingStrokesRef.current.filter(
+        s => !consumedSet.has(s)
+      );
+      return;
     }
 
     // Try to create a new element from pending strokes with cross-type disambiguation
@@ -1016,6 +1079,129 @@ function App() {
     setPaletteIntent(null);
   }, [paletteIntent, setCurrentNote, startElementAnimation]);
 
+  // Handle component menu action (user selected a component type or dismissed)
+  const handleComponentAction = useCallback(async (
+    action: ComponentAction,
+    kind?: ComponentKind
+  ) => {
+    if (!componentIntent) return;
+
+    if (action === 'select' && kind === 'button') {
+      debugLog.info('Component menu: user selected Button');
+
+      // Recognize text from the text strokes
+      try {
+        const service = getRecognitionService();
+        const recognition = await service.recognizeGoogle(componentIntent.textStrokes);
+        const text = recognition.rawText.trim() || 'Button';
+
+        debugLog.info('Button text recognized', { text });
+
+        const btnData: ArrowButtonData = {
+          id: `btn-${Date.now()}`,
+          text,
+          bounds: componentIntent.rectangleBounds,
+        };
+        setArrowButtons(prev => [...prev, btnData]);
+
+        // Remove the temporary stroke element + existing rect element (if any)
+        const gestureStrokeSet = new Set(componentIntent.pendingStrokes);
+        const existingRectId = componentIntent.existingRectElementId;
+        const latestNote = currentNoteRef.current;
+        setCurrentNote({
+          ...latestNote,
+          elements: latestNote.elements.filter(el => {
+            // Remove the existing rectangle ShapeElement that became part of the button
+            if (existingRectId && el.id === existingRectId) return false;
+            // Remove temp stroke elements holding gesture strokes
+            if (el.type === 'stroke' && el.strokes.some(s => gestureStrokeSet.has(s))) return false;
+            return true;
+          }),
+        });
+      } catch (err) {
+        debugLog.error('Button text recognition failed', err);
+      }
+    } else {
+      debugLog.info('Component menu: dismissed, keeping strokes');
+    }
+
+    setComponentIntent(null);
+  }, [componentIntent, setCurrentNote]);
+
+  // Handle removing a physics simulation
+  const handleRemovePhysicsSim = useCallback((id: string) => {
+    setPhysicsSims(prev => prev.filter(s => s.id !== id));
+  }, []);
+
+  // Handle simulate from lasso selection (user drew circle around elements and clicked Simulate)
+  const handleSimulateFromLasso = useCallback(async (
+    _selectedElements: Element[],
+    lassoBounds: BoundingBox,
+    lassoElementId: string,
+  ) => {
+    const loadingId = `phys-${Date.now()}`;
+
+    // Expand lasso bounds so the simulation has room to render
+    const lw = lassoBounds.right - lassoBounds.left;
+    const lh = lassoBounds.bottom - lassoBounds.top;
+    const padX = lw * 0.3;
+    const padY = lh * 0.3;
+    // Ensure minimum size of 500×400
+    const simBounds: BoundingBox = {
+      left: lassoBounds.left - padX,
+      top: lassoBounds.top - padY,
+      right: Math.max(lassoBounds.right + padX, lassoBounds.left - padX + 500),
+      bottom: Math.max(lassoBounds.bottom + padY, lassoBounds.top - padY + 400),
+    };
+
+    // Show shimmer loading at the expanded bounds
+    setPhysicsLoading(prev => [...prev, { id: loadingId, bounds: simBounds }]);
+
+    // Remove the lasso stroke element
+    const latestNote = currentNoteRef.current;
+    setCurrentNote({
+      ...latestNote,
+      elements: latestNote.elements.filter(el => el.id !== lassoElementId),
+    });
+
+    try {
+      // Find the main canvas
+      const canvas = mainCanvasRef.current
+        ?? document.querySelector('canvas:not([style*="touch-action"])') as HTMLCanvasElement;
+
+      if (!canvas) throw new Error('Canvas element not found');
+
+      const viewport = viewportRef.current ?? { panX: 0, panY: 0, zoom: 1 };
+      // Capture the original lasso region (tight around the drawing)
+      const snapshot = captureCanvasRegion(canvas, lassoBounds, viewport);
+
+      // Sim dimensions use expanded bounds
+      const simWidth = simBounds.right - simBounds.left;
+      const simHeight = simBounds.bottom - simBounds.top;
+
+      const result = await generatePhysicsSim(snapshot, simWidth, simHeight);
+
+      // Replace loading with actual sim
+      setPhysicsLoading(prev => prev.filter(l => l.id !== loadingId));
+      setPhysicsSims(prev => [...prev, {
+        id: loadingId,
+        html: result.html,
+        title: result.title,
+        bounds: simBounds,
+      }]);
+
+      debugLog.info('Physics simulation generated from lasso', { title: result.title });
+    } catch (err) {
+      debugLog.error('Physics generation from lasso failed', err);
+      setPhysicsLoading(prev => prev.filter(l => l.id !== loadingId));
+    }
+  }, [setCurrentNote]);
+
+  // Handle removing an Arrow.js button
+  const handleRemoveButton = useCallback((id: string) => {
+    setArrowButtons(prev => prev.filter(b => b.id !== id));
+  }, []);
+
   return (
     <div className="app">
       <div className="canvas-container">
@@ -1043,6 +1229,14 @@ function App() {
           paletteIntent={paletteIntent}
           onPaletteAction={handlePaletteAction}
           strokesToClearFromOverlay={strokesToClearFromOverlay}
+          arrowButtons={arrowButtons}
+          onRemoveButton={handleRemoveButton}
+          componentIntent={componentIntent}
+          onComponentAction={handleComponentAction}
+          physicsSims={physicsSims}
+          physicsLoading={physicsLoading}
+          onRemovePhysicsSim={handleRemovePhysicsSim}
+          onSimulateFromLasso={handleSimulateFromLasso}
         />
       </div>
 

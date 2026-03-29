@@ -61,6 +61,11 @@ export function LassoMenu({
     onAction('select');
   }, [onAction]);
 
+  const handleSimulate = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    onAction('simulate');
+  }, [onAction]);
+
   const handleDelete = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
     onAction('delete');
@@ -137,6 +142,17 @@ export function LassoMenu({
             }}
           />
           <MenuButton
+            icon="atom"
+            label="Simulate"
+            onClick={handleSimulate}
+          />
+          <div
+            style={{
+              width: '1px',
+              backgroundColor: '#e0e0e0',
+            }}
+          />
+          <MenuButton
             icon="trash"
             label="Delete"
             onClick={handleDelete}
@@ -165,7 +181,7 @@ export function LassoMenu({
 }
 
 interface MenuButtonProps {
-  icon: 'check' | 'trash';
+  icon: 'check' | 'trash' | 'atom';
   label: string;
   onClick: (e: React.MouseEvent) => void;
   danger?: boolean;
@@ -175,6 +191,13 @@ function MenuButton({ icon, label, onClick, danger }: MenuButtonProps) {
   const iconElement = icon === 'check' ? (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <polyline points="20 6 9 17 4 12" />
+    </svg>
+  ) : icon === 'atom' ? (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <circle cx="12" cy="12" r="2" />
+      <ellipse cx="12" cy="12" rx="10" ry="4" />
+      <ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(60 12 12)" />
+      <ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(120 12 12)" />
     </svg>
   ) : (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

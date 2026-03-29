@@ -1,5 +1,6 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
 import type { NoteElements, Element, Stroke, Brush } from '../types';
+import type { BoundingBox } from '../types/primitives';
 import type { InkTextElement } from '../elements/inktext/types';
 import { hasActiveTransitions as hasActiveImageTransitions } from '../elements/sketchableimage/renderer';
 import { hasActiveTicTacToeAnimations } from '../elements/tictactoe/renderer';
@@ -26,6 +27,14 @@ import { DisambiguationMenu } from '../disambiguation';
 import type { DisambiguationIntent, DisambiguationAction, DisambiguationCandidate } from '../disambiguation';
 import { PaletteMenu } from '../palette';
 import type { PaletteIntent, PaletteAction } from '../palette';
+import { ArrowButtonOverlay } from '../interactive/ArrowButtonOverlay';
+import type { ArrowButtonData } from '../interactive/ArrowButtonOverlay';
+import { ComponentMenu } from '../interactive/ComponentMenu';
+import type { ComponentIntent, ComponentAction, ComponentKind } from '../interactive/ComponentIntent';
+import { PhysicsMenu } from '../interactive/PhysicsMenu';
+import type { PhysicsIntent, PhysicsAction } from '../interactive/PhysicsIntent';
+import { PhysicsOverlay } from '../interactive/PhysicsOverlay';
+import type { PhysicsSimData, PhysicsSimLoading } from '../interactive/PhysicsOverlay';
 
 export type Tool = 'pen' | 'eraser' | 'pan' | 'select';
 
@@ -64,6 +73,20 @@ export interface InkCanvasProps {
   onPaletteAction?: (action: PaletteAction, entryId?: string) => void;
   // Overlay stroke clearing - used for scribble erase to sync stroke removal with element removal
   strokesToClearFromOverlay?: { strokes: Stroke[]; requestId: number } | null;
+  // Arrow.js interactive buttons
+  arrowButtons?: ArrowButtonData[];
+  onRemoveButton?: (id: string) => void;
+  // Component menu (turn sketch into interactive component)
+  componentIntent?: ComponentIntent | null;
+  onComponentAction?: (action: ComponentAction, kind?: ComponentKind) => void;
+  // Physics simulation
+  physicsIntent?: PhysicsIntent | null;
+  onPhysicsAction?: (action: PhysicsAction) => void;
+  physicsSims?: PhysicsSimData[];
+  physicsLoading?: PhysicsSimLoading[];
+  onRemovePhysicsSim?: (id: string) => void;
+  // Simulate from lasso selection
+  onSimulateFromLasso?: (selectedElements: Element[], lassoBounds: BoundingBox, lassoElementId: string) => void;
 }
 
 export function InkCanvas({
@@ -90,6 +113,16 @@ export function InkCanvas({
   paletteIntent,
   onPaletteAction,
   strokesToClearFromOverlay,
+  arrowButtons,
+  onRemoveButton,
+  componentIntent,
+  onComponentAction,
+  physicsIntent,
+  onPhysicsAction,
+  physicsSims,
+  physicsLoading,
+  onRemovePhysicsSim,
+  onSimulateFromLasso,
 }: InkCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -401,7 +434,7 @@ export function InkCanvas({
     if (hasActiveAnimations || hasGenerating || hasActiveImageTransitions() || hasActiveTicTacToeAnimations()) {
       animationFrameRef.current = requestAnimationFrame(render);
     }
-  }, [noteElements, viewport, canvasSize, showDebugOverlay, animatingElements, animationDuration, getSizeMultiplier, onAnimationComplete, selectedElementIds]);
+  }, [noteElements, viewport, showDebugOverlay, animatingElements, animationDuration, getSizeMultiplier, onAnimationComplete, selectedElementIds]);
 
   // Render the overlay canvas (in-progress stroke and selection marquee)
   const renderOverlay = useCallback(() => {
@@ -1313,12 +1346,24 @@ export function InkCanvas({
         onSelectionIntentChange?.(null);
         break;
 
+      case 'simulate':
+        // Forward to App for physics simulation generation
+        if (onSimulateFromLasso) {
+          onSimulateFromLasso(
+            selectionIntent.selectedElements,
+            selectionIntent.lassoBounds,
+            selectionIntent.lassoElementId,
+          );
+        }
+        onSelectionIntentChange?.(null);
+        break;
+
       case 'dismiss':
         // Just clear the intent - lasso stroke remains as content
         onSelectionIntentChange?.(null);
         break;
     }
-  }, [selectionIntent, onSelectionChange, onSelectionIntentChange, noteElements.elements, onElementsChange]);
+  }, [selectionIntent, onSelectionChange, onSelectionIntentChange, noteElements.elements, onElementsChange, onSimulateFromLasso]);
 
   // Create a wrapper for canvasToScreen for the LassoMenu
   const canvasToScreenWrapper = useCallback((point: { x: number; y: number }) => {
@@ -1376,6 +1421,27 @@ export function InkCanvas({
         intent={paletteIntent ?? null}
         onAction={onPaletteAction ?? (() => {})}
         canvasToScreen={canvasToScreenWrapper}
+      />
+      {/* Component menu (turn sketch into component) */}
+      <ComponentMenu
+        intent={componentIntent ?? null}
+        onAction={onComponentAction ?? (() => {})}
+        canvasToScreen={canvasToScreenWrapper}
+      />
+      {/* Arrow.js interactive button overlays */}
+      <ArrowButtonOverlay buttons={arrowButtons ?? []} viewport={viewport} onRemoveButton={onRemoveButton} />
+      {/* Physics simulation menu */}
+      <PhysicsMenu
+        intent={physicsIntent ?? null}
+        onAction={onPhysicsAction ?? (() => {})}
+        canvasToScreen={canvasToScreenWrapper}
+      />
+      {/* Physics simulation overlays */}
+      <PhysicsOverlay
+        sims={physicsSims ?? []}
+        loading={physicsLoading ?? []}
+        viewport={viewport}
+        onRemoveSim={onRemovePhysicsSim}
       />
       {/* InkText content overlays in debug mode */}
       {showDebugOverlay && inkTextOverlays.map((overlay) => (

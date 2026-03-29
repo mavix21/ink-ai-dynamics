@@ -30,7 +30,7 @@ export interface SelectionIntent {
 /**
  * Actions that can be performed on a selection intent.
  */
-export type SelectionIntentAction = 'select' | 'delete' | 'dismiss';
+export type SelectionIntentAction = 'select' | 'delete' | 'simulate' | 'dismiss';
 
 /**
  * Create a selection intent from lasso data.
