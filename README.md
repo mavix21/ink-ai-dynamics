@@ -2,9 +2,7 @@
 
 A hackathon project built on top of the ink.ai drawing canvas. While the base ink.ai app provides the core stroke processing, shape detection, and handwriting recognition, **this project adds the ability to seamlessly turn physics diagrams and hand-drawn sketches into fully interactive simulations** and UI components.
 
-<video controls width="100%" src="./demo-ink-ai.mov"></video>
-
-*[If the video isn't displaying correctly in your browser, click here to view it.](./demo-ink-ai.mov)*
+<video controls width="100%" src="./demo-ink-ai.mp4"></video>
 
 ## Getting Started
 
